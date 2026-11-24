@@ -40,9 +40,19 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
-pub(crate) fn decode_image(
-    input: &str,
-) -> Result<(Vec<u8>, img::DynamicImage, img::ImageFormat), String> {
+pub(crate) struct DecodedFile {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) image: img::DynamicImage,
+    pub(crate) format: img::ImageFormat,
+    pub(crate) frames: Vec<AnimationFrame>,
+}
+
+pub(crate) struct AnimationFrame {
+    pub(crate) delay_ms: u32,
+    pub(crate) image: img::RgbaImage,
+}
+
+pub(crate) fn decode_image(input: &str) -> Result<DecodedFile, String> {
     let payload = match input.find("base64,") {
         Some(index) => &input[index + "base64,".len()..],
         None => input,
@@ -61,18 +71,66 @@ pub(crate) fn decode_image(
     let bytes = decode_base64(&cleaned).map_err(|error| format!("Base64 解码失败：{error}"))?;
 
     let detected = img::guess_format(&bytes)
-        .map_err(|_| "无法识别图片格式（支持 PNG / JPG / JPEG）".to_owned())?;
+        .map_err(|_| "无法识别图片格式（支持 PNG / JPG / JPEG / GIF）".to_owned())?;
 
-    let decoded_image =
-        img::load_from_memory(&bytes).map_err(|error| format!("图片解析失败：{error}"))?;
+    if detected == img::ImageFormat::Gif {
+        return decode_gif(bytes);
+    }
 
-    Ok((bytes, decoded_image, detected))
+    let image = img::load_from_memory(&bytes).map_err(|error| format!("图片解析失败：{error}"))?;
+
+    Ok(DecodedFile {
+        bytes,
+        image,
+        format: detected,
+        frames: Vec::new(),
+    })
+}
+
+fn decode_gif(bytes: Vec<u8>) -> Result<DecodedFile, String> {
+    use img::AnimationDecoder;
+
+    let decoder = img::codecs::gif::GifDecoder::new(Cursor::new(&bytes))
+        .map_err(|error| format!("GIF 解码失败：{error}"))?;
+
+    let frames = decoder
+        .into_frames()
+        .collect_frames()
+        .map_err(|error| format!("GIF 解码失败：{error}"))?;
+
+    let first = frames
+        .first()
+        .ok_or_else(|| "GIF 不包含任何图像帧".to_owned())?;
+
+    let image = img::DynamicImage::ImageRgba8(first.buffer().clone());
+
+    let frames = frames
+        .into_iter()
+        .map(|frame| {
+            let (numerator, denominator) = frame.delay().numer_denom_ms();
+            AnimationFrame {
+                delay_ms: numerator / denominator.max(1),
+                image: frame.into_buffer(),
+            }
+        })
+        .collect();
+
+    Ok(DecodedFile {
+        bytes,
+        image,
+        format: img::ImageFormat::Gif,
+        frames,
+    })
 }
 
 pub(crate) fn encode_image(
     image: &img::DynamicImage,
     format: OutputFormat,
 ) -> Result<Vec<u8>, String> {
+    if format == OutputFormat::Gif {
+        return encode_static_gif(image);
+    }
+
     let mut bytes = Cursor::new(Vec::new());
 
     let result = match format {
@@ -80,6 +138,7 @@ pub(crate) fn encode_image(
         OutputFormat::Jpg | OutputFormat::Jpeg => {
             image.to_rgb8().write_to(&mut bytes, img::ImageFormat::Jpeg)
         }
+        OutputFormat::Gif => unreachable!(),
     };
 
     result.map_err(|error| format!("图片编码失败：{error}"))?;
@@ -87,10 +146,44 @@ pub(crate) fn encode_image(
     Ok(bytes.into_inner())
 }
 
+fn encode_static_gif(image: &img::DynamicImage) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+
+    {
+        let mut encoder = img::codecs::gif::GifEncoder::new_with_speed(&mut bytes, 10);
+        encoder
+            .encode_frame(img::Frame::new(image.to_rgba8()))
+            .map_err(|error| format!("图片编码失败：{error}"))?;
+    }
+
+    Ok(bytes)
+}
+
+pub(crate) fn encode_gif_frames(frames: &[AnimationFrame]) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+
+    {
+        let mut encoder = img::codecs::gif::GifEncoder::new_with_speed(&mut bytes, 10);
+        encoder
+            .set_repeat(img::codecs::gif::Repeat::Infinite)
+            .map_err(|error| format!("GIF 编码失败：{error}"))?;
+
+        for frame in frames {
+            let delay = img::Delay::from_numer_denom_ms(frame.delay_ms.max(10), 1);
+            encoder
+                .encode_frame(img::Frame::from_parts(frame.image.clone(), 0, 0, delay))
+                .map_err(|error| format!("GIF 编码失败：{error}"))?;
+        }
+    }
+
+    Ok(bytes)
+}
+
 pub(crate) fn describe_format(format: img::ImageFormat) -> (&'static str, &'static str) {
     match format {
         img::ImageFormat::Png => ("PNG", "image/png"),
         img::ImageFormat::Jpeg => ("JPEG", "image/jpeg"),
+        img::ImageFormat::Gif => ("GIF", "image/gif"),
         _ => ("图片", "application/octet-stream"),
     }
 }

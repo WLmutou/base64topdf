@@ -60,7 +60,7 @@ impl App {
                 .size(12)
                 .color(muted()),
             Space::new().width(Length::Fill),
-            text("支持 data:image/…;base64 前缀，自动识别图片类型")
+            text("支持 data:image/…;base64 前缀，自动识别 PNG / JPEG / GIF")
                 .size(12)
                 .color(muted()),
         ]
