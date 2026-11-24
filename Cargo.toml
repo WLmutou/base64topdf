@@ -1,0 +1,27 @@
+[package]
+name = "base64topdf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "0.14", default-features = false, features = [
+    "tiny-skia",
+    "image-without-codecs",
+    "x11",
+    "wayland",
+    "linux-theme-detection",
+    "thread-pool",
+] }
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+iced = { version = "0.14", default-features = false, features = [
+    "tiny-skia",
+    "image-without-codecs",
+    "thread-pool",
+] }
+rfd = { version = "0.15", default-features = false }
